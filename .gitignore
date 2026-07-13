@@ -1,0 +1,7 @@
+# Windows / 에디터
+Thumbs.db
+Desktop.ini
+*.log
+
+# 로컬 테스트 시 생성되는 로그 (사용자 PC의 %LOCALAPPDATA% 에는 해당 없음)
+.cursor_faster_local/
