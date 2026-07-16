@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Cursor IDE 프로세스의 CPU 우선순위를 지속적으로 '높음(High)'으로 유지합니다.
@@ -17,6 +17,12 @@
       - msedgewebview2.exe (다른 앱과 공유)
       - node.exe 등 범용 프로세스
 
+    적응형 스캔 간격:
+      - High인 Cursor 프로세스 < 임계값(기본 6) 또는 모(메인)이 Normal
+        → 빠른 간격(기본 15초)
+      - High인 Cursor ≥ 임계값 → 느린 간격(기본 15분)
+      - 모 프로세스가 다시 Normal이면 빠른 간격으로 복귀
+
 .NOTES
     프로젝트: https://github.com/gjtuc/cursor_faster
     직접 실행 가능하지만, 보통 install.ps1 로 작업 스케줄러에 등록해 사용합니다.
@@ -31,10 +37,17 @@
 # 기본값 'High' = 작업 관리자의 "높음"
 $TargetPriority = 'High'
 
-# 프로세스 스캔 간격 (초)
-# - 너무 짧으면(예: 1초) 불필요한 CPU 사용 증가
-# - 너무 길면(예: 60초) Cursor 실행 직후 잠깐 Normal일 수 있음
-$ScanIntervalSeconds = 15
+# 빠른 스캔 간격 (초) — 부팅·재시작 직후, High 개수 부족, 모가 Normal일 때
+$FastScanIntervalSeconds = 15
+
+# 느린 스캔 간격 (초) — 동시 High인 Cursor ≥ 임계값일 때
+$SlowScanIntervalSeconds = 900
+
+# 느린 간격으로 전환하는 동시 High Cursor 개수 임계값
+$SlowModeHighCountThreshold = 6
+
+# 하위 호환: 예전 단일 간격 변수 (빠른 간격과 동일하게 유지)
+$ScanIntervalSeconds = $FastScanIntervalSeconds
 
 # 로그 파일 기록 여부
 $EnableLogging = $true
@@ -112,6 +125,111 @@ function Get-CursorProcesses {
         Where-Object { $_.ProcessName -like 'Cursor*' }
 }
 
+function Get-CursorMainProcessIds {
+    <#
+    .SYNOPSIS
+        Cursor 프로세스 트리에서 모(메인) 프로세스 ID 목록을 반환합니다.
+
+    .DESCRIPTION
+        부모가 Cursor* 가 아닌 Cursor 프로세스를 메인으로 봅니다.
+        (창을 여러 개 열면 메인이 둘 이상일 수 있음)
+    #>
+    $cimProcs = @(
+        Get-CimInstance -ClassName Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -like 'Cursor*' }
+    )
+
+    if ($cimProcs.Count -eq 0) {
+        return @()
+    }
+
+    $cursorIds = @{}
+    foreach ($p in $cimProcs) {
+        $cursorIds[[int]$p.ProcessId] = $true
+    }
+
+    $mainIds = New-Object System.Collections.Generic.List[int]
+    foreach ($p in $cimProcs) {
+        $ppid = [int]$p.ParentProcessId
+        if (-not $cursorIds.ContainsKey($ppid)) {
+            [void]$mainIds.Add([int]$p.ProcessId)
+        }
+    }
+
+    return @($mainIds)
+}
+
+function Test-CursorMainIsNormal {
+    <#
+    .SYNOPSIS
+        모(메인) Cursor 중 하나라도 목표 우선순위가 아니면 $true.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Diagnostics.ProcessPriorityClass]$DesiredPriority
+    )
+
+    $mainIds = @(Get-CursorMainProcessIds)
+    if ($mainIds.Count -eq 0) {
+        return $false
+    }
+
+    foreach ($mainId in $mainIds) {
+        try {
+            $proc = Get-Process -Id $mainId -ErrorAction Stop
+            $proc.Refresh()
+            if ($proc.HasExited) {
+                continue
+            }
+            if ($proc.PriorityClass -ne $DesiredPriority) {
+                return $true
+            }
+        }
+        catch {
+            # 종료 직전 등이면 다음 메인으로
+            continue
+        }
+    }
+
+    return $false
+}
+
+function Get-CursorHighCount {
+    <#
+    .SYNOPSIS
+        현재 High(목표 우선순위)인 Cursor 프로세스 개수.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Diagnostics.ProcessPriorityClass]$DesiredPriority,
+
+        [Parameter(Mandatory = $false)]
+        [System.Diagnostics.Process[]]$Processes
+    )
+
+    if (-not $Processes) {
+        $Processes = @(Get-CursorProcesses)
+    }
+
+    $count = 0
+    foreach ($proc in $Processes) {
+        try {
+            $proc.Refresh()
+            if ($proc.HasExited) {
+                continue
+            }
+            if ($proc.PriorityClass -eq $DesiredPriority) {
+                $count++
+            }
+        }
+        catch {
+            continue
+        }
+    }
+
+    return $count
+}
+
 function Set-ProcessPriorityIfNeeded {
     <#
     .SYNOPSIS
@@ -148,9 +266,12 @@ function Invoke-PriorityScan {
         [System.Diagnostics.ProcessPriorityClass]$DesiredPriority
     )
 
-    $processes = Get-CursorProcesses
-    if (-not $processes) {
-        return 0
+    $processes = @(Get-CursorProcesses)
+    if ($processes.Count -eq 0) {
+        return @{
+            ChangedCount = 0
+            Processes    = @()
+        }
     }
 
     $changedCount = 0
@@ -174,7 +295,58 @@ function Invoke-PriorityScan {
         }
     }
 
-    return $changedCount
+    return @{
+        ChangedCount = $changedCount
+        Processes    = $processes
+    }
+}
+
+function Get-NextScanIntervalSeconds {
+    <#
+    .SYNOPSIS
+        High 개수·모 프로세스 상태에 따라 다음 스캔 간격을 고릅니다.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Diagnostics.ProcessPriorityClass]$DesiredPriority,
+
+        [Parameter(Mandatory = $false)]
+        [System.Diagnostics.Process[]]$Processes,
+
+        [Parameter(Mandatory = $true)]
+        [bool]$PreviousSlowMode
+    )
+
+    $highCount = Get-CursorHighCount -DesiredPriority $DesiredPriority -Processes $Processes
+    $mainIsNormal = Test-CursorMainIsNormal -DesiredPriority $DesiredPriority
+
+    if ($mainIsNormal) {
+        return @{
+            IntervalSeconds = $FastScanIntervalSeconds
+            SlowMode        = $false
+            HighCount       = $highCount
+            MainIsNormal    = $true
+            Reason          = 'main_normal'
+        }
+    }
+
+    if ($highCount -ge $SlowModeHighCountThreshold) {
+        return @{
+            IntervalSeconds = $SlowScanIntervalSeconds
+            SlowMode        = $true
+            HighCount       = $highCount
+            MainIsNormal    = $false
+            Reason          = 'high_count_threshold'
+        }
+    }
+
+    return @{
+        IntervalSeconds = $FastScanIntervalSeconds
+        SlowMode        = $false
+        HighCount       = $highCount
+        MainIsNormal    = $false
+        Reason          = 'below_threshold'
+    }
 }
 
 # =============================================================================
@@ -190,23 +362,50 @@ $desiredPriority = [System.Diagnostics.ProcessPriorityClass]::Parse(
     $true
 )
 
+$slowMode = $false
+
 Write-WatcherLog -Message (
-    "감시 시작 | 목표=$TargetPriority | 간격=${ScanIntervalSeconds}s | 작업=$TaskName | PID=$PID"
+    "감시 시작 | 목표=$TargetPriority | 빠른=${FastScanIntervalSeconds}s | 느린=${SlowScanIntervalSeconds}s | High임계=$SlowModeHighCountThreshold | 작업=$TaskName | PID=$PID"
 )
 
 # 무한 루프: 작업 스케줄러가 중지할 때까지 실행
 # (uninstall.ps1 또는 작업 스케줄러에서 "끝내기"로 종료)
 while ($true) {
-    try {
-        $changed = Invoke-PriorityScan -DesiredPriority $desiredPriority
+    $sleepSeconds = $FastScanIntervalSeconds
 
-        if ($changed -gt 0) {
-            Write-WatcherLog -Message "$changed 개 프로세스 우선순위를 $TargetPriority 로 변경"
+    try {
+        $scanResult = Invoke-PriorityScan -DesiredPriority $desiredPriority
+
+        if ($scanResult.ChangedCount -gt 0) {
+            Write-WatcherLog -Message "$($scanResult.ChangedCount) 개 프로세스 우선순위를 $TargetPriority 로 변경"
+        }
+
+        $intervalInfo = Get-NextScanIntervalSeconds `
+            -DesiredPriority $desiredPriority `
+            -Processes $scanResult.Processes `
+            -PreviousSlowMode $slowMode
+
+        $sleepSeconds = [int]$intervalInfo.IntervalSeconds
+
+        if ($intervalInfo.SlowMode -ne $slowMode) {
+            if ($intervalInfo.SlowMode) {
+                Write-WatcherLog -Message (
+                    "느린 감시로 전환 | High=$($intervalInfo.HighCount) (>=$SlowModeHighCountThreshold) | 간격=${sleepSeconds}s"
+                )
+            }
+            else {
+                Write-WatcherLog -Message (
+                    "빠른 감시로 복귀 | 이유=$($intervalInfo.Reason) | High=$($intervalInfo.HighCount) | 간격=${sleepSeconds}s"
+                )
+            }
+            $slowMode = [bool]$intervalInfo.SlowMode
         }
     }
     catch {
         Write-WatcherLog -Level 'ERROR' -Message "스캔 오류: $($_.Exception.Message)"
+        $sleepSeconds = $FastScanIntervalSeconds
+        $slowMode = $false
     }
 
-    Start-Sleep -Seconds $ScanIntervalSeconds
+    Start-Sleep -Seconds $sleepSeconds
 }

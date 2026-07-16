@@ -3,7 +3,8 @@
 Windows에서 **Cursor IDE**의 CPU 우선순위를 **높음(High)** 으로 유지하는 도구입니다.
 
 작업 관리자에서 수동으로 우선순위를 바꾸면 재부팅·재실행 시 **보통(Normal)** 으로 돌아갑니다.  
-이 프로젝트는 **작업 스케줄러 + PowerShell** 로 로그인 후 백그라운드에서 Cursor 프로세스를 감시하고, 우선순위가 내려가면 자동으로 다시 **높음** 으로 맞춥니다.
+이 프로젝트는 **작업 스케줄러 + PowerShell** 로 로그인 후 백그라운드에서 Cursor 프로세스를 감시하고, 우선순위가 내려가면 자동으로 다시 **높음** 으로 맞춥니다.  
+스캔 간격은 **적응형**입니다. 동시 High인 Cursor가 충분하면 15분마다, 모(메인)이 Normal이거나 High가 부족하면 15초마다 확인합니다.
 
 > 어떤 방법으로 Cursor를 실행해도 적용됩니다. (작업 표시줄, 바로가기, `cursor` CLI, 자동 시작 등)
 
@@ -78,7 +79,7 @@ C:\Users\<사용자>\.cursor\cursor_faster\scripts\set-cursor-priority.ps1
 |------|-----|
 | 트리거 | 사용자 로그온 시 |
 | 동작 | PowerShell로 감시 스크립트 실행 (창 숨김) |
-| 주기 | 15초마다 Cursor 프로세스 스캔 |
+| 주기 | 적응형 — High &lt; 6 또는 모(메인) Normal → **15초**, High ≥ 6 → **15분** |
 | 우선순위 | **High (높음)** |
 
 ### 4. 동작 확인
@@ -115,19 +116,25 @@ cursor_faster/
 flowchart TD
     A[Windows 로그인] --> B[작업 스케줄러]
     B --> C[set-cursor-priority.ps1 시작]
-    C --> D{15초 대기}
+    C --> D[스캔 대기]
     D --> E[Cursor* 프로세스 검색]
     E --> F{우선순위가 High?}
     F -->|아니오| G[PriorityClass = High]
-    F -->|예| D
-    G --> H[로그 기록]
-    H --> D
+    F -->|예| H{모가 Normal? 또는 High개수 < 6?}
+    G --> H
+    H -->|예| I[다음 간격 15초]
+    H -->|아니오 High ≥ 6| J[다음 간격 15분]
+    I --> D
+    J --> D
 ```
 
 1. 로그인 시 PowerShell이 백그라운드에서 감시 스크립트를 실행합니다.
-2. 15초마다 `Cursor` 로 시작하는 프로세스 이름을 찾습니다.
-3. 우선순위가 **High** 가 아니면 **High** 로 변경합니다.
-4. Cursor를 나중에 켜도, 다음 스캔 주기 안에 자동 적용됩니다.
+2. `Cursor` 로 시작하는 프로세스를 찾아 우선순위가 **High** 가 아니면 **High** 로 변경합니다.
+3. **동시 High인 Cursor ≥ 6** 이면 스캔 간격을 **15분**으로 늘립니다.
+4. **모(메인) 프로세스**가 다시 **Normal**이면 간격을 **15초**로 되돌립니다.
+5. Cursor를 나중에 켜도, 다음 스캔 주기 안에 자동 적용됩니다.
+
+모 프로세스 판별: 부모가 `Cursor*`가 아닌 Cursor 프로세스(창을 여러 개 열면 메인이 둘 이상일 수 있음).
 
 ---
 
@@ -143,7 +150,10 @@ Start-ScheduledTask -TaskName 'CursorFaster-PriorityWatcher'
 | 변수 | 기본값 | 설명 |
 |------|--------|------|
 | `$TargetPriority` | `High` | `Normal`, `AboveNormal`, `High` 등 |
-| `$ScanIntervalSeconds` | `15` | 스캔 주기(초). 너무 짧으면 CPU 소모 증가 |
+| `$FastScanIntervalSeconds` | `15` | 빠른 스캔 주기(초). High &lt; 임계값 또는 모가 Normal일 때 |
+| `$SlowScanIntervalSeconds` | `900` | 느린 스캔 주기(초, 기본 15분). High ≥ 임계값일 때 |
+| `$SlowModeHighCountThreshold` | `6` | 느린 간격으로 전환하는 동시 High Cursor 개수 |
+| `$ScanIntervalSeconds` | `$FastScanIntervalSeconds` | 하위 호환용(빠른 간격과 동일) |
 | `$EnableLogging` | `$true` | 로그 파일 기록 여부 |
 
 > **실시간(Realtime)** 은 시스템 불안정을 일으킬 수 있어 지원하지 않습니다.
