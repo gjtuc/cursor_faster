@@ -78,7 +78,7 @@ C:\Users\<사용자>\.cursor\cursor_faster\scripts\set-cursor-priority.ps1
 | 항목 | 값 |
 |------|-----|
 | 트리거 | 사용자 로그온 시 |
-| 동작 | PowerShell로 감시 스크립트 실행 (창 숨김) |
+| 동작 | `wscript` + `run-watcher-hidden.vbs` 로 감시 실행 (**콘솔 창 없음**) |
 | 주기 | 적응형 — High &lt; 6 또는 모(메인) Normal → **15초**, High ≥ 6 → **15분** |
 | 우선순위 | **High (높음)** |
 
@@ -103,7 +103,8 @@ cursor_faster/
 ├── README.md                      # 이 문서
 ├── LICENSE
 └── scripts/
-    ├── set-cursor-priority.ps1    # 백그라운드 감시 (작업 스케줄러가 실행)
+    ├── set-cursor-priority.ps1    # 백그라운드 감시
+    ├── run-watcher-hidden.vbs     # 콘솔 창 없이 감시 기동 (작업 스케줄러가 실행)
     ├── install.ps1                # 작업 스케줄러 등록
     └── uninstall.ps1              # 작업 스케줄러·로그 제거
 ```
