@@ -59,15 +59,20 @@ else {
 
 $watcherProcesses = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
     Where-Object {
-        $_.Name -eq 'powershell.exe' -and
-        $_.CommandLine -like '*set-cursor-priority.ps1*'
+        (
+            $_.Name -eq 'powershell.exe' -and
+            $_.CommandLine -like '*set-cursor-priority.ps1*'
+        ) -or (
+            ($_.Name -eq 'wscript.exe' -or $_.Name -eq 'cscript.exe') -and
+            $_.CommandLine -like '*run-watcher-hidden.vbs*'
+        )
     }
 
 if ($watcherProcesses) {
     foreach ($proc in $watcherProcesses) {
         try {
             Stop-Process -Id $proc.ProcessId -Force -ErrorAction Stop
-            Write-Host "감시 프로세스 종료: PID $($proc.ProcessId)" -ForegroundColor Green
+            Write-Host "감시 프로세스 종료: PID $($proc.ProcessId) ($($proc.Name))" -ForegroundColor Green
         }
         catch {
             Write-Host "감시 프로세스 종료 실패 PID $($proc.ProcessId): $($_.Exception.Message)" -ForegroundColor Yellow

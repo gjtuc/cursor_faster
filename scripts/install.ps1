@@ -6,6 +6,7 @@
 .DESCRIPTION
     사용자 로그온 시 set-cursor-priority.ps1 이 백그라운드로 실행되도록 설정합니다.
     재부팅 후에도 Cursor 프로세스 우선순위가 자동으로 '높음'으로 유지됩니다.
+    콘솔 창이 보이지 않도록 run-watcher-hidden.vbs 경유로 실행합니다.
 
 .PARAMETER ScriptPath
     set-cursor-priority.ps1 의 전체 경로.
@@ -27,7 +28,14 @@
 
 [CmdletBinding()]
 param(
-    [string]$ScriptPath = (Join-Path $PSScriptRoot 'set-cursor-priority.ps1'),
+    [string]$ScriptPath = $(
+        if ($PSScriptRoot) {
+            Join-Path $PSScriptRoot 'set-cursor-priority.ps1'
+        }
+        else {
+            Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'set-cursor-priority.ps1'
+        }
+    ),
 
     [string]$TaskName = 'CursorFaster-PriorityWatcher'
 )
@@ -43,7 +51,15 @@ if (-not (Test-Path -LiteralPath $ScriptPath)) {
 }
 
 $resolvedScript = (Resolve-Path -LiteralPath $ScriptPath).Path
-$quotedScript = "`"$resolvedScript`""
+$scriptDir = Split-Path -Parent $resolvedScript
+$vbsPath = Join-Path $scriptDir 'run-watcher-hidden.vbs'
+
+if (-not (Test-Path -LiteralPath $vbsPath)) {
+    throw "숨김 실행 VBS를 찾을 수 없습니다: $vbsPath"
+}
+
+$resolvedVbs = (Resolve-Path -LiteralPath $vbsPath).Path
+$quotedVbs = "`"$resolvedVbs`""
 
 Write-Host ''
 Write-Host '========================================' -ForegroundColor Cyan
@@ -51,6 +67,7 @@ Write-Host ' cursor_faster 설치' -ForegroundColor Cyan
 Write-Host '========================================' -ForegroundColor Cyan
 Write-Host " 작업 이름 : $TaskName"
 Write-Host " 스크립트  : $resolvedScript"
+Write-Host " 숨김 실행 : $resolvedVbs"
 Write-Host " 우선순위  : High (높음)"
 Write-Host " 트리거    : 사용자 로그온 시"
 Write-Host ''
@@ -62,6 +79,12 @@ Write-Host ''
 $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
 if ($existing) {
     Write-Host "기존 작업 '$TaskName' 을(를) 제거하고 다시 등록합니다..." -ForegroundColor Yellow
+    try {
+        Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    }
+    catch {
+        # 이미 중지된 경우 무시
+    }
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
 }
 
@@ -69,12 +92,12 @@ if ($existing) {
 # 작업 스케줄러 액션 / 트리거 / 설정
 # -----------------------------------------------------------------------------
 
-# -WindowStyle Hidden : 로그인 시 PowerShell 창이 뜨지 않음
-# -ExecutionPolicy Bypass : 스크립트 실행 정책 우회 (작업 스케줄러 인수로만 적용)
-$argumentList = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File $quotedScript"
+# wscript + VBS(Run windowstyle 0) 로 powershell 창이 뜨지 않게 함
+# //B = 배너·알림 억제, //Nologo = 로고 숨김
+$argumentList = "//B //Nologo $quotedVbs"
 
 $action = New-ScheduledTaskAction `
-    -Execute 'powershell.exe' `
+    -Execute 'wscript.exe' `
     -Argument $argumentList
 
 # 현재 사용자 로그온 시 1회 실행 (감시 스크립트가 무한 루프로 계속 동작)
@@ -114,7 +137,7 @@ Write-Host "작업 스케줄러 등록 완료: $TaskName" -ForegroundColor Green
 
 try {
     Start-ScheduledTask -TaskName $TaskName
-    Write-Host '감시 작업을 지금 시작했습니다.' -ForegroundColor Green
+    Write-Host '감시 작업을 지금 시작했습니다. (콘솔 창 없음)' -ForegroundColor Green
 }
 catch {
     Write-Host '감시 작업 즉시 시작 실패 (재로그인 후 자동 시작됩니다):' -ForegroundColor Yellow
