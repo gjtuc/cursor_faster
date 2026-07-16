@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     cursor_faster 작업 스케줄러 등록 및 (선택) 로그 파일을 제거합니다.

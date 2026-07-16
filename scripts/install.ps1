@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     cursor_faster 감시 스크립트를 Windows 작업 스케줄러에 등록합니다.
